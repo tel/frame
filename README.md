@@ -3,7 +3,8 @@
 A thin wrapper over Hiccup for low-level plotting and layout.
 
 Wrap a Hiccup data structure in a frame to use context aware flows,
-data aware painting and n
+data aware painting and natural scales. It translates transparently to
+Hiccup-flavored SVG and Hiccup syntax can be used liberally.
 
 ## rationale
 
