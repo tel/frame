@@ -6,3 +6,5 @@ pom.xml
 /out/
 .lein-failures
 .lein-deps-sum
+.#*
+.DS_Store
