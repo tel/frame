@@ -1,6 +1,7 @@
 (ns frame.core
   (:use hiccup.core)
-  (:require [hiccup.page-helpers :as helpers]))
+  (:require [hiccup.page-helpers :as helpers]
+            [clojure.string :as str]))
 
 ;;; Working with a dynamic context
 ;;; 
@@ -99,16 +100,20 @@
     (if (ctx-has? :width :height)
       (with-ctx [width height]
         (let [clipname (str (gensym))
-              inner [:g
-                     [:defs
-                      [:rect {:id clipname :width width :height height}]]
-                     [:g {:clip-path (to-f [:url (str "#" clipname)])}
-                      (gen-children)]]]
+              inner (fn []
+                      [:g
+                       [:defs
+                        [:rect {:id clipname :width width :height height}]]
+                       [:g {:style (css :clip-path (to-f [:url (str "#" clipname)]))}
+                        (gen-children)]])]
+          ;; TODO: Figure out why clipping breaks when I don't create
+          ;; a new SVG element. It's a bit clunky to keep creating
+          ;; extra layers.
           (if (:svg *ctx*)
-            inner
+            (inner)
             (svg {}
                  (set-ctx {:svg true}
-                   inner)))))
+                   (inner))))))
       (throw
        (Exception.
         "Outermost frame needs to specify the :height and :width.")))))
@@ -127,10 +132,12 @@
   `(let [[a# b# c# d#] (expand-margin ~@padding)
          dy# (+ a# c#)
          dx# (+ b# d#)]
+     ;; Shrink the inner context
      (update-ctx {:width #(- % dx#)
                   :height #(- % dy#)}
-       [:g {:transform (to-f [:translate a# d#])}
-        ~@rest])))
+       ;; And transform it away from the upper left corner
+       [:g {:transform (to-f [:translate d# a#])}
+        (frame {} ~@rest)])))
 
 ;;; Scales and transformations
 ;;; 
@@ -199,29 +206,84 @@
             #(/ (Math/log %) lbase)
             #(if (== % 0)
                (throw (Exception. "Cannot take log of 0."))
-               (Math/log %)))
-        ginv (if expt
+               (Math/log %)))]
+    (apply scale g args)))
+
+(defn scale:exp [& args]
+  (let [{:keys [expt]} args
+        g (if expt
                #(Math/pow expt %)
                #(Math/exp %))]
     (apply scale g args)))
 
+;;; Flows
+
 (defn- partition-interval
   "Partition an interval using a flexible interval set."
   [int part])
+
+;;; Grobs
+(defn path
+  ([ds] (path ds :line))
+  ([ds key]
+     (let [letters {:line "L"
+                    :curve "T"}
+           [x0 y0] (first ds)]
+       (apply str "M" x0 " " y0 " "
+              (for [[x y] (rest ds)]
+                (str (key letters) x " " y " "))))))
+
+;;; Readers
+(defn swallow-exception [f]
+  (fn [& args]
+    (try (apply f args)
+         (catch Exception e nil))))
+
+(defn read-csv [file format]
+  (let [letter {\f #(Float/parseFloat %)
+                \i #(Integer/parseInt %)
+                \s str/trim}
+        ;; Is there not a better way to do this? Zip-with-functions
+        dofn (fn [f & args] (apply f args))
+        parse-line (fn [comps] (map dofn (map (comp swallow-exception letter) format) comps))
+        lines (str/split-lines (slurp file))]
+    (for [line lines]
+      (->> line
+           (re-seq #"([^,]+),?")
+           (map second)
+           parse-line))))
+
+;;; Some tests
+
+(def d (read-csv "out/dists.csv" "sfffffffff"))
 
 (spit "out/test.html"
       (html
        [:html {:xmlns:svg "http://www.w3.org/2000/svg"}
         [:head [:title "Test"]]
         [:body
-         [:div {:style "width: 800px; height 500px; margin: 0 auto; background: #eee"}
+         [:div {:style "width: 500px; height 500px; margin: 0 auto; background: #fafafa"}
           (let [data (for [i (map #(/ % 100) (range 1 1000))]
-                       {:x i :y (Math/sin (Math/pow i 2))})]
-            (frame {:width 800 :height 500}
-              (padded [50]
-                (let [tx (scale:affine :auto (map :x data) :range :x)
-                      ty (scale:affine :auto (map :y data) :range :y)
-                      tr (scale:sqrt   :auto (map :x data) :range [0 10])]
-                  (for [{:keys [x y]} data]
-                    [:circle {:r 1 :cx (tx x) :cy (ty y)}])))))]]]))
+                       {:x i :y (Math/pow (Math/sin i) 2)})
+                ep (map (fn [row] (nth row 7)) d)
+                kp (map (fn [row] (nth row 9)) d)
+                ne (map (fn [row] (nth row 1)) d)]
+            (frame {:width 500 :height 500}
+              (padded [20]
+                (let [tx (scale:affine :domain [0.5 1] :range :x)
+                      ty (scale:affine :domain [0.5 1] :range :y)
+                      tr (scale:sqrt   :auto ne :range [1 4])]
+                  (for [i (range (count d))]
+                    (let [n (nth ne i)
+                          e (nth ep i)
+                          k (nth kp i)]
+                      [:circle {:r (tr n) :cx (tx k) :cy (ty e)
+                                :fill (cond (> e k) "red"
+                                            (< e k) "green"
+                                            (== e k) "black")}]))
+                  ;; [:path {:d (path (for [{:keys [x y]} data] [(tx x) (ty y)]))
+                  ;;         :stroke "#000"
+                  ;;         :stroke-width 1
+                  ;;         :fill :none}]
+                  ))))]]]))
 
