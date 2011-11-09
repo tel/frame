@@ -1,26 +1,70 @@
 (ns frame.core
   (:use hiccup.core)
-  (:use [clojure.core.match :only [match]]))
+  (:require [hiccup.page-helpers :as helpers]))
 
-(defn test [vec]
-  (html [:html {:xmlns:svg "http://www.w3.org/2000/svg"}
-         [:head [:title "Test"]]
-         [:body
-          [:div {:style "width: 800px; margin: 0 auto; background: #eee"}
-           vec]]]))
+;;; Working with a dynamic context
+;;; 
+(def ^{:dynamic true
+       :doc "Current rendering context."}
+  *ctx* nil)
 
-(defn svg* [gen-body]
+(defn- ctx-has? [& syms]
+  (every? #(% *ctx*) syms))
+
+(defmacro set-ctx [args & body]
+  `(binding [*ctx* (merge *ctx* ~args)]
+     ~@body))
+
+(defmacro update-ctx [args-and-fns & body]
+  `(binding [*ctx* (reduce
+                    (fn [ctx# [key# fn#]]
+                      (update-in ctx# [key#] fn#))
+                    *ctx*
+                    ~args-and-fns)]
+     ~@body))
+
+(defmacro with-ctx [syms & body]
+  (let [let-forms
+        (if (map? syms)
+          `[~syms *ctx*]
+          (vec (apply concat
+                      (map (fn [sym]
+                             `[~sym ((keyword '~sym) *ctx*)])
+                           syms))))
+        syms (if (map? syms)
+               (map (fn [[_ sym]] sym) syms)
+               syms)]
+    `(if (ctx-has? ~@(map keyword syms))
+       (let ~let-forms
+         ~@body)
+       (throw
+        (Exception.
+         (str "Insufficient context! Need "
+              '~syms
+              ". Context is "
+              (pr-str *ctx*)))))))
+
+;;; Some XML and SVG Hiccuphelpers
+;;; 
+(def doctype (merge helpers/doctype
+                    {:svg "<!DOCTYPE svg PUBLIC \"-//W3C//DTD SVG 1.1//EN\"
+\"http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd\">"}))
+
+(def xml?
+  "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?>")
+
+(defn svg-tag [attrs body]
+  [:svg (merge {:xmlns "http://www.w3.org/2000/svg"
+                :xmlns:xlink "http://www.w3.org/1999/xlink"
+                :version "1.1"} attrs) body])
+
+(defn svg* [args gen-body]
   ;; Eventually we'll parse down for sanity in dimensions
-  (binding [*ctx* (merge *ctx* {:height 500 :width 800})]
-    [:svg {:width 800 :height 500} (gen-body)]))
+  (set-ctx args
+    (svg-tag {:width (:width *ctx*) :height (:height *ctx*)} (gen-body))))
 
-(defmacro svg [& body]
-  `(svg* (fn [] ~@body)))
-
-(defmacro testsvg [vecs]
-  `(spit "out/test.html" (test (svg ~vecs))))
-
-;;; -----
+(defmacro svg [args & body]
+  `(svg* ~args (fn [] ~@body)))
 
 (defn- to-f
   "Convert some Hiccup-like vectors to sequences of f-exprs."
@@ -32,9 +76,9 @@
            (if (keyword? head)
              (apply str
                     (subs (str (first form)) 1)
-                    "(" (concat (interpose ", " (map to-fexpr
+                    "(" (concat (interpose ", " (map to-f
                                                      rest)) [")"]))
-             (apply str (interpose " " (map to-fexpr form))))
+             (apply str (interpose " " (map to-f form))))
            (str head)))
        (str form))))
 
@@ -45,120 +89,139 @@
        (apply str
               (for [[k v] hash]
                 (str (subs (str k) 1) ": "
-                     (if (sequential? v) (to-fexpr v) v)
+                     (if (sequential? v) (to-f v) v)
                      "; "))))))
 
-(defn merge-valued
-  ([map1 map2]
-     (reduce
-      (fn [map [k v]]
-        (if v (assoc map k v) map))
-      map1
-      map2))
-  ([map1 map2 & maps] (reduce merge-valued (merge-valued map1 map2) maps)))
+;;; Blocklike elements
+;;; 
+(defn frame* [args gen-children]
+  (set-ctx args
+    (if (ctx-has? :width :height)
+      (with-ctx [width height]
+        (let [clipname (str (gensym))
+              inner [:g
+                     [:defs
+                      [:rect {:id clipname :width width :height height}]]
+                     [:g {:clip-path (to-f [:url (str "#" clipname)])}
+                      (gen-children)]]]
+          (if (:svg *ctx*)
+            inner
+            (svg {}
+                 (set-ctx {:svg true}
+                   inner)))))
+      (throw
+       (Exception.
+        "Outermost frame needs to specify the :height and :width.")))))
 
-(def ^{:dynamic true
-       :doc "Current rendering context."}
-  *ctx* {})
+(defmacro frame [args & body]
+  `(frame* ~args (fn [] ~@body)))
 
-(defn axes []
-  [:g {:id "axes"}
-         (apply concat
-                (for [i (range 100)]
-                  (let [pos (- (* 20 i) 1000)]
-                    [[:circle {:r 1 :cy 0 :cx pos}]
-                     [:text {:y 5 :x (- (* 20 i) 1000)
-                             :style (css :font-size 8)} pos]])))
-         (apply concat
-                (for [i (range 100)]
-                  (let [pos (- (* 20 i) 1000)]
-                    [[:circle {:r 1 :cx 0 :cy pos}]
-                     [:text {:x 5 :y (- (* 20 i) 1000)
-                             :style (css :font-size 8)} pos]])))])
+(defn- expand-margin
+  "Expand the SVG margin syntax."
+  ([a] [a a a a])
+  ([a b] [a b a b])
+  ([a b c d] [a b c d]))
 
-(comment
-  ;; An example for how this is supposed to work
-  ;; Paired dotplots sharing an axis
-  (svg (picture {:width 500 :height 400}
-         (hflow [50 [:auto 0.5 0.5]]
-           (let [ ;; Scales are context-aware and plot to the proper
-                 ;; place in each viewport
-                 ty (scale:linear :auto (concat (map :x data1)
-                                                (map :x data2)))
-                 ;; Scales should ALWAYS be used
-                 tx1 (scale:linear :auto (map :y data1))
-                 tx2 (scale:linear :auto (map :y data2))]
-             (vaxis :on-scale ty)
-             (vflow [1 :auto]
-               (padding [0 0 5 0]
-                 (viewport {:xlim [(tx -2) (tx 30)]}
-                   (for [{:keys [x y]} data1]
-                     [:circle {:r 1 :cx (tx1 x) :cy (ty y)}])))
-               (haxis :on-scale tx1))
-             (vflow [1 :auto]
-               (padding [5 0 0 0]
-                 (viewport {}
-                   (for [{:keys [x y]} data2]
-                     [:circle {:r 1 :cx (tx2 x) :cy (ty y)}])))
-               (haxis :on-scale tx2))))))
-  ;; Dotplot
-  (svg (picture {:width 500 :height 400}
-         (let [tx (scale:log :auto (concat (map :p1 data)
-                                           (map :p2 data)
-                                           (map :p3 data)))]
-           (vflow (repeat (count data) 1)
-             (for [{:keys [lab p1 p2 p3]} data]
-               (hflow [50 [:auto 1]]
-                 [:text lab]
-                 ;; The viewport is set to a 1-dimensional mode; y is centered
-                 (viewport {:y :center}
-                   [:circle {:r 1 :cx (tx p1)}]
-                   [:circle {:r 1 :cx (tx p2)}]
-                   [:circle {:r 1 :cx (tx p3)}])))
-             (hflow [50 [:auto 1]]
-               nil
-               (haxis :on-scale tx))))))
-  )
+(defmacro padded
+  [padding & rest]
+  `(let [[a# b# c# d#] (expand-margin ~@padding)
+         dy# (+ a# c#)
+         dx# (+ b# d#)]
+     (update-ctx {:width #(- % dx#)
+                  :height #(- % dy#)}
+       [:g {:transform (to-f [:translate a# d#])}
+        ~@rest])))
 
-(defn canvas* [args gen-children]
-  (let [{:keys [width height xlim ylim xtransform ytransform]
-         :or {width  (:width  *ctx*)
-              height (:height *ctx*)
-              xtransform identity
-              ytransform identity}}
-        args
+;;; Scales and transformations
+;;; 
+(defn itransform [g ;; transformation and inverse
+                  & {:keys [auto domain range]
+                     :or {domain [0 1]
+                          range  [0 1]}}]
+  (with-ctx [width height]
+    (let [auto? auto
+          ;; Fix the domain to the data using auto
+          domain (if auto?
+                   [(apply min auto) (apply max auto)]
+                   domain)
+          ;; Attempt to build the range automatically
+          range (case range
+                  :x [0 width]
+                  :y [height 0]
+                  range)
+          [in0 inf] domain
+          [out0 outf] range
+          domain-meas (- inf in0)
+          range-meas  (- outf out0)]
+      #(float
+        (+ (* range-meas
+              (/ (g (/ (- % in0)
+                       domain-meas))
+                 (g 1)))
+           out0)))))
 
-        [xmin xmax] (or xlim [0 width])
-        xbound (- xmax xmin)
-        [ymin ymax] (or ylim [0 height])
-        ybound (- ymax ymin)
-        name (gensym "boundary")]
-    (binding
-        [*ctx* (merge *ctx*
-                      {:transform-x (fn [x] (* (/ x xbound) width))
-                       :transform-y (fn [y] (- (* (/ y ybound) height)))
-                       :ybound ybound})]
-      [:g
-       [:defs [:rect (merge-valued {:id (str name)}
-                                   {:height height :width width})]
-        (axes)]
-       (vec (concat [:g {;; :style (css :clip-path name)
-                         :transform (to-f [:translate 0 420]
-                                          [:scale 1 1])}
-                     [:use {:xlink:href (to-f [:url "#axes"])}]
-                     ]
-                    (gen-children)))])))
+(defn scale [g ;; transformation
+             & {:keys [auto domain range]
+                :or {domain [0 1]
+                     range  [0 1]}}]
+  (with-ctx [width height]
+    (let [auto (map g auto)
+          auto? (not (empty? auto))
+          ;; Fix the domain to the data using auto
+          domain (if auto?
+                   [(apply min auto) (apply max auto)]
+                   domain)
+          ;; Attempt to build the range automatically
+          range (case range
+                  :x [0 width]
+                  :y [height 0]
+                  range)
+          [in0 inf] (if auto? domain (map g domain))
+          [out0 outf] range
+          domain-meas (- inf in0)
+          range-meas  (- outf out0)]
+      #(float
+        (+ (* range-meas
+              (/ (- (g %) in0)
+                 domain-meas))
+           out0)))))
 
-(defmacro canvas [args & children]
-  `(canvas* ~args (fn [] ~@children)))
+(defn scale:affine [& args]
+  (apply scale identity args))
 
-(defn point [x y]
-  (let [tx (:transform-x *ctx* identity)
-        ty (:transform-y *ctx* identity)]
-    [:circle {:r 1 :cx (float (tx x)) :cy (float (ty y))}]))
+(defn scale:sqrt [& args]
+  (apply scale #(Math/sqrt %) args))
 
-(testsvg
- (canvas {:xlim [0 50] :ylim [0 (* 50 50)]}
-   (println *ctx*)
-   (for [i (range 50)]
-     (point i (* i i)))))
+(defn scale:log [& args]
+  (let [{:keys [expt]} args
+        lbase (and expt (Math/log expt))
+        g (if expt
+            #(/ (Math/log %) lbase)
+            #(if (== % 0)
+               (throw (Exception. "Cannot take log of 0."))
+               (Math/log %)))
+        ginv (if expt
+               #(Math/pow expt %)
+               #(Math/exp %))]
+    (apply scale g args)))
+
+(defn- partition-interval
+  "Partition an interval using a flexible interval set."
+  [int part])
+
+(spit "out/test.html"
+      (html
+       [:html {:xmlns:svg "http://www.w3.org/2000/svg"}
+        [:head [:title "Test"]]
+        [:body
+         [:div {:style "width: 800px; height 500px; margin: 0 auto; background: #eee"}
+          (let [data (for [i (map #(/ % 100) (range 1 1000))]
+                       {:x i :y (Math/sin (Math/pow i 2))})]
+            (frame {:width 800 :height 500}
+              (padded [50]
+                (let [tx (scale:affine :auto (map :x data) :range :x)
+                      ty (scale:affine :auto (map :y data) :range :y)
+                      tr (scale:sqrt   :auto (map :x data) :range [0 10])]
+                  (for [{:keys [x y]} data]
+                    [:circle {:r 1 :cx (tx x) :cy (ty y)}])))))]]]))
+
