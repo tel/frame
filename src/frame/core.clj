@@ -62,7 +62,7 @@
 (defn svg* [args gen-body]
   ;; Eventually we'll parse down for sanity in dimensions
   (set-ctx args
-    (svg-tag {:width (:width *ctx*) :height (:height *ctx*)} (gen-body))))
+    (svg-tag {:width (:width *ctx*) :height (:height *ctx*) :fill :none} (gen-body))))
 
 (defmacro svg [args & body]
   `(svg* ~args (fn [] ~@body)))
@@ -94,7 +94,26 @@
                      "; "))))))
 
 ;;; Blocklike elements
-;;; 
+;;;
+(defn spy [x] (prn x) x)
+(defn- is-hiccup-vec
+  [[x & _]] (not (sequential? x)))
+
+(defn- flatten-hiccup* [vs]
+  (loop [vs vs build nil]
+    (let [[v & vs] vs]
+     (if (nil? v)
+       (vec build)
+       (if (is-hiccup-vec v)
+         (recur vs (cons v build))
+         (recur vs (concat (flatten-hiccup* v) build)))))))
+
+(defn- flatten-hiccup [x]
+  (if (sequential? x)
+    (if (is-hiccup-vec x) [x]
+        (vec (reverse (flatten-hiccup* x))))
+    x))
+
 (defn frame* [args gen-children]
   (set-ctx args
     (if (ctx-has? :width :height)
@@ -104,8 +123,8 @@
                       [:g
                        [:defs
                         [:rect {:id clipname :width width :height height}]]
-                       [:g {:style (css :clip-path (to-f [:url (str "#" clipname)]))}
-                        (gen-children)]])]
+                       `[:g ~{:style (css :clip-path (to-f [:url (str "#" clipname)]))}
+                         ~@(flatten-hiccup (gen-children))]])]
           ;; TODO: Figure out why clipping breaks when I don't create
           ;; a new SVG element. It's a bit clunky to keep creating
           ;; extra layers.
@@ -119,7 +138,7 @@
         "Outermost frame needs to specify the :height and :width.")))))
 
 (defmacro frame [args & body]
-  `(frame* ~args (fn [] ~@body)))
+  `(frame* ~args (fn [] [~@body])))
 
 (defn- expand-margin
   "Expand the SVG margin syntax."
@@ -146,7 +165,8 @@
                      :or {domain [0 1]
                           range  [0 1]}}]
   (with-ctx [width height]
-    (let [auto? auto
+    (let [auto? (not (nil? auto))
+          auto (remove nil? auto)
           ;; Fix the domain to the data using auto
           domain (if auto?
                    [(apply min auto) (apply max auto)]
@@ -169,15 +189,15 @@
 
 (defn scale [g ;; transformation
              & {:keys [auto domain range]
-                :or {domain [0 1]
-                     range  [0 1]}}]
+                :or {range  [0 1]}}]
   (with-ctx [width height]
     (let [auto (map g auto)
           auto? (not (empty? auto))
           ;; Fix the domain to the data using auto
-          domain (if auto?
-                   [(apply min auto) (apply max auto)]
-                   domain)
+          domain (or domain
+                     (if auto?
+                       [(apply min auto) (apply max auto)])
+                     [0 1])
           ;; Attempt to build the range automatically
           range (case range
                   :x [0 width]
@@ -222,6 +242,8 @@
   "Partition an interval using a flexible interval set."
   [int part])
 
+(defn hflow [])
+
 ;;; Grobs
 (defn path
   ([ds] (path ds :line))
@@ -255,35 +277,73 @@
 
 ;;; Some tests
 
-(def d (read-csv "out/dists.csv" "sfffffffff"))
+(def d (sort-by #(- (nth % 4) (nth % 5))
+                (remove (partial some nil?)
+                        (read-csv "out/dists.csv"
+                                  "sffffffffffff"))))
+
+(defn vline [x]
+  (with-ctx [height]
+    [:line {:y1 0 :y2 height
+            :x1 x :x2 x
+            :stroke-width 1 :stroke "#000"}]))
+
+(defn hline [y]
+  (with-ctx [width]
+    [:line {:x1 0 :x2 width
+            :y1 y :y2 y
+            :stroke-width 1 :stroke "#000"}]))
+
+(defn sign [^double x]
+  (cond (< x 0) -1
+        (> x 0) 1
+        true 0))
+
+(defmacro dataspace [[tx-sym xs ty-sym ys &
+                      {:keys [xlim ylim]}]
+                     & body]
+  `(let [xs# ~xs ys# ~ys xlim# ~xlim ylim# ~ylim]
+     (let [~tx-sym (scale:affine :auto xs# :domain xlim# :range :x)
+           ~ty-sym (scale:affine :auto ys# :domain ylim# :range :y)]
+       ~@body)))
+
+(defn scatter [xs ys rs colors]
+  (dataspace [tx xs ty ys :xlim [0.5 1] :ylim [0.5 1]]
+    (let [tr (scale:sqrt :auto rs :range [1 6])]
+      [(hline (ty 0))
+       (for [i (range (count xs))]
+         (let [x (nth xs i)
+               y (nth ys i)
+               r (nth rs i)
+               clr (nth colors i)]
+           [:circle {:cy (ty y) :cx (tx x) :r (tr r)
+                     :fill clr}]))])))
+
 
 (spit "out/test.html"
       (html
        [:html {:xmlns:svg "http://www.w3.org/2000/svg"}
         [:head [:title "Test"]]
         [:body
-         [:div {:style "width: 500px; height 500px; margin: 0 auto; background: #fafafa"}
-          (let [data (for [i (map #(/ % 100) (range 1 1000))]
-                       {:x i :y (Math/pow (Math/sin i) 2)})
-                ep (map (fn [row] (nth row 7)) d)
-                kp (map (fn [row] (nth row 9)) d)
-                ne (map (fn [row] (nth row 1)) d)]
-            (frame {:width 500 :height 500}
-              (padded [20]
-                (let [tx (scale:affine :domain [0.5 1] :range :x)
-                      ty (scale:affine :domain [0.5 1] :range :y)
-                      tr (scale:sqrt   :auto ne :range [1 4])]
-                  (for [i (range (count d))]
-                    (let [n (nth ne i)
-                          e (nth ep i)
-                          k (nth kp i)]
-                      [:circle {:r (tr n) :cx (tx k) :cy (ty e)
-                                :fill (cond (> e k) "red"
-                                            (< e k) "green"
-                                            (== e k) "black")}]))
-                  ;; [:path {:d (path (for [{:keys [x y]} data] [(tx x) (ty y)]))
-                  ;;         :stroke "#000"
-                  ;;         :stroke-width 1
-                  ;;         :fill :none}]
-                  ))))]]]))
-
+         [:div {:style (css :width "500px"
+                            :height "500px"
+                            :margin [0 "auto"]
+                            :background "#fafafa")}
+          (let [n (count d)
+                ml  (map (fn [row] (nth row 3)) d)
+                ne  (map (fn [row] (nth row 1)) d)
+                np  (map (fn [row] (nth row 2)) d)   
+                ep     (map (fn [row] (nth row 4)) d)
+                kp     (map (fn [row] (nth row 5)) d)
+                e2p    (map (fn [row] (nth row 6)) d)
+                epknn2 (map (fn [row] (nth row 7)) d)
+                epknn8 (map (fn [row] (nth row 8)) d)
+                eps10  (map (fn [row] (nth row 9)) d)
+                kpknn2 (map (fn [row] (nth row 10)) d)
+                kpknn8 (map (fn [row] (nth row 11)) d)
+                kps10  (map (fn [row] (nth row 12)) d)
+                colors {1 "green" 0 "black" -1 "red"}]
+            (list
+             (frame {:width 500 :height 500}
+               (padded [6]
+                 (scatter kp kpknn8 ne (map (comp colors sign -) kp kpknn8))))))]]]))
