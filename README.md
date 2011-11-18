@@ -2,79 +2,54 @@
 
 A thin wrapper over Hiccup for low-level plotting and layout.
 
-Wrap a Hiccup data structure in a frame to use context aware flows,
-data aware painting and natural scales. It translates transparently to
-Hiccup-flavored SVG and Hiccup syntax can be used liberally.
+Wrap a Hiccup data structure in Frames with context aware flowing,
+data aware painting, and natural scales. It translates (semi-)transparently 
+to Hiccup-flavored SVG allowing obvious mixing between the two libraries.
 
-## rationale
-
-I do a lot of scientific work in Clojure, but the storytelling aspects
-always end up living in R due to the fantastic plotting libraries
-(grid, lattice, ggplot2) available. The export/import/plot workflow is
-clunky and I'd also like to incorporate the declarative methods
-pioneered by Michael Bostock in protovis/d3.
+*Note*: As a `ver < 1` library, the API is considered super flexible.
 
 # The frameworke projects
 
-Frameworke is an SVG-hosted plotting library at three levels: 
+Frameworke is a declarative, SVG-hosted plotting library at three levels: 
 
 1. frame: low-level SVG chart layout and building
-2. worke: grammar-of-graphics and data aware composition of middle-level graphing objects
-3. plots: very high level default plots for data exploration and discovery using formulae
+2. worke: data aware composition of middle-level graphing objects
+3. plots: high level ploting for data exploration and discovery using formulae
 
-I'm proudly stealing great ideas from d3 for frame, ggplot2 for worke,
-and lattice for plots. Atop it all, Clojure's natural depiction of
-tree-like data and homoiconicity creates an elegant DSL for creating
-and describing empirical stories in charts.
+Framework happily steals ideas from d3, Trellis, and GGPlot, bringing 
+sensible plotting to Clojure.
 
 ## Usage
 
-Not implemented yet, but here's the idea
-
 ````clojure
 ;; Paired dotplots sharing an axis
-(svg (picture {:width 500 :height 400}
-       (hflow [50 [:auto 0.5 0.5]]
-         (let [ ;; Scales are context-aware and plot to the proper
-               ;; place in each viewport
-               ty (scale:linear :auto (concat (map :x data1)
-                                              (map :x data2)))
-               ;; Scales should ALWAYS be used
-               tx1 (scale:linear :auto (map :y data1))
-               tx2 (scale:linear :auto (map :y data2))]
-           (vaxis :on-scale ty)
-           (vflow [1 :auto]
-             (padding [0 0 5 0]
-               (viewport {:xlim [(tx -2) (tx 30)]}
-                 (for [{:keys [x y]} data1]
-                   [:circle {:r 1 :cx (tx1 x) :cy (ty y)}])))
-             (haxis :on-scale tx1))
-           (vflow [1 :auto]
-             (padding [5 0 0 0]
-               (viewport {}
-                 (for [{:keys [x y]} data2]
-                   [:circle {:r 1 :cx (tx2 x) :cy (ty y)}])))
-             (haxis :on-scale tx2))))))
-
-
-;; A simple lattice-like dotplot
-(svg (picture {:width 500 :height 400}
-       (let [tx (scale:log :auto (concat (map :p1 data)
-                                         (map :p2 data)
-                                         (map :p3 data)))]
-         (vflow (repeat (count data) 1)
-           (for [{:keys [lab p1 p2 p3]} data]
-             (hflow [50 [:auto 1]]
-               [:text lab]
-               ;; The viewport is set to a 1-dimensional mode; y is centered
-               (viewport {:y :center}
-                 [:circle {:r 1 :cx (tx p1)}]
-                 [:circle {:r 1 :cx (tx p2)}]
-                 [:circle {:r 1 :cx (tx p3)}])))
-           (hflow [50 [:auto 1]]
-             nil
-             (haxis :on-scale tx))))))
+(spit "out.svg"
+      (test-svg
+       (doframes {:width 500 :height 400}
+         (dataframe [ty (scale/linear :domain (concat (map :x data1)
+                                                      (map :x data2))
+                                      :range :y)
+                     tr (scale/sqrt :domain (concat (map :r data1)
+                                                    (map :r data2))
+                                    :range [1 6])]
+           (hflow
+            (padded [0 0 5 0]
+              (dataframe
+                  [tx (scale:linear :domain (map :x data1) :range :x)]
+                (for [{:keys [x y r]} data1]
+                  [:circle {:fill "#000" :r (tr 1) :cx (tx x) :cy (ty y)}])))
+            (padded [5 0 0 0]
+              (dataframe
+                  [tx (scale:linear :domain (map :x data1) :range :x)]
+                (for [{:keys [x y r]} data2]
+                  [:circle {:fill "#000" :r (tr 1) :cx (tx x) :cy (ty y)}]))))))))
 ````
+
+## Other projects and inspiration
+* Mike Bostock's [d3](http://mbostock.github.com/d3/)
+* R's [Trellis Graphics](http://www.stat.auckland.ac.nz/~paul/RGraphics/chapter4.pdf) library
+* Hadley Wickham's [GGPlot2](http://www.stat.auckland.ac.nz/~paul/RGraphics/chapter4.pdf
+* liebke's [Annalemma](http://liebke.github.com/analemma/)
 
 ## MIT License
 
