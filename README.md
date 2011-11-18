@@ -48,7 +48,7 @@ sensible plotting to Clojure.
 ## Other projects and inspiration
 * Mike Bostock's [d3](http://mbostock.github.com/d3/)
 * R's [Trellis Graphics](http://www.stat.auckland.ac.nz/~paul/RGraphics/chapter4.pdf) library
-* Hadley Wickham's [GGPlot2](http://www.stat.auckland.ac.nz/~paul/RGraphics/chapter4.pdf
+* Hadley Wickham's [GGPlot2](http://www.stat.auckland.ac.nz/~paul/RGraphics/chapter4.pdf)
 * liebke's [Annalemma](http://liebke.github.com/analemma/)
 
 ## MIT License
