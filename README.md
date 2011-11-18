@@ -16,7 +16,7 @@ Frameworke is a declarative, SVG-hosted plotting library at three levels:
 2. worke: data aware composition of middle-level graphing objects
 3. plots: high level ploting for data exploration and discovery using formulae
 
-Framework happily steals ideas from d3, Trellis, and GGPlot, bringing 
+Framework happily steals ideas from d3, Trellis, GGPlot, and Analemma, bringing 
 sensible plotting to Clojure.
 
 ## Usage
