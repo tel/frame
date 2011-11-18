@@ -49,7 +49,7 @@ sensible plotting to Clojure.
 * Mike Bostock's [d3](http://mbostock.github.com/d3/)
 * R's [Trellis Graphics](http://www.stat.auckland.ac.nz/~paul/RGraphics/chapter4.pdf) library
 * Hadley Wickham's [GGPlot2](http://www.stat.auckland.ac.nz/~paul/RGraphics/chapter4.pdf)
-* David Edgar Liebke's [Annalemma](http://liebke.github.com/analemma/)
+* David Edgar Liebke's [Analemma](http://liebke.github.com/analemma/)
 
 ## MIT License
 
