@@ -21,6 +21,8 @@ sensible plotting to Clojure.
 
 ## Usage
 
+*Now with* working code*!*
+
 ````clojure
 ;; Paired dotplots sharing an axis
 (spit "out.svg"
