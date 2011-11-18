@@ -89,46 +89,87 @@
   [key val]
   (update-val key (fn [_] val)))
 
+
+;;; Create some context control mechanisms using this monad
+
 (defn bubble-sfn
-  "Chains a stateful computation downward, consuming and preserving
+  "Bubbles a stateful computations upward, consuming and preserving
   intermediate lists, vectors, and hashes."
   [x]
   (with-monad state-m
-    (if (sequential? x)
-      (let [refn (m-lift 1 (cond (vector? x) vec
-                                 (map? x) (partial apply merge)
-                                 (set? x) set
-                                 true identity))]
-        (->> x
-             (map bubble-sfn)
-             m-seq refn))
-      (if (state-m? x)
-        x (m-result x)))))
+    (cond (sequential? x)
+          (let [refn (m-lift 1 (cond (vector? x) vec
+                                     (set? x) set
+                                     true identity))]
+            (->> x
+                 (map bubble-sfn)
+                 m-seq refn))
+          
+          (map? x)
+          ((m-lift 1 (partial into {})) (bubble-sfn (seq x)))
 
-(defmacro with-ctx [syms form]
-  `(domonad state-m
-     [~(if (map? syms)
-         syms
-         ;; Use a map destructuring bind between mappings in the state
-         ;; and the local vars.
-         (apply merge (map (fn [sym] {sym (keyword sym)}) syms)))
-      (fetch-state)
-      res# (bubble-sfn ~form)]
-     res#))
+          :else
+          (if (state-m? x)
+            x (m-result x)))))
+
+(defmacro with-ctx
+  ([syms form] `(with-ctx ~syms nil ~form))
+  ([syms nil-v form]
+     `(domonad state-m
+        [~(if (map? syms)
+            syms
+            ;; Use a map destructuring bind between mappings in the state
+            ;; and the local vars.
+            (merge (apply merge (map (fn [sym] {sym (keyword sym)}) syms))
+                   {:or (apply merge (map (fn [sym] {sym nil-v}) syms))}))
+         (fetch-state)
+         res# (bubble-sfn
+               ;; Note we revert to the identity monad so that the
+               ;; state-m interface isn't accidentally exposed
+               (with-monad identity-m ~form))]
+        res#)))
+
+(defmacro with-ctx!
+  "Normally with-ctx just silently nils any requested symbols which
+  aren't in the current state context. with-ctx! modifies this
+  behavior to reject unset"
+  [syms form]
+  `(with-ctx ~syms ::undefined
+     (if (some #(= ::undefined %) ~syms)
+       (throw+ {:fatal? true
+                :message (apply str "No contextual binding provided for symbols: "
+                                (interpose
+                                 " "
+                                 (map first
+                                      (filter (comp #(= ::undefined %) second)
+                                              (map list
+                                                   '[~@syms]
+                                                   ~syms)))))})
+       ~form)))
+
+(defn set-ctx*
+  "A definitive functional form of set-ctx that uses keywords. All the
+  macro does is translate the symbols unevaluated to keywords"
+  [bindings form]
+  (with-monad state-m
+    (m-bind (m-seq (map #(apply set-val %) (partition 2 (flatten (seq bindings)))))
+            (constantly (bubble-sfn form)))))
 
 (defmacro set-ctx [bindings form]
-  ;; Can we assume that the body of a set-ctx will always be a Hiccup
-  ;; phrase? Can we assume it will always be walkable? What about just
-  ;; the last clause? 
-  (let [n (count bindings)
-        n2 (if (even? n) (/ n 2)
-               (throw+ {:fatal? true
-                        :message "Must pass an even number of binding forms to set-ctx."}))]
-    `(let [form# ~form]
-       (domonad state-m
-         [~@(interleave (repeat n2 '_)
-                        (map (fn [[sym val]]
-                               `(set-val (keyword '~sym) ~val))
-                             (partition 2 bindings)))
-          res# (bubble-sfn form#)]
-         res#))))
+  `(set-ctx* ~(vec (map-indexed
+                    (fn [i x]
+                      (if (even? i) (keyword x) x)) bindings))
+             (with-monad identity-m
+               ~form)))
+
+(defn update-ctx* [args-and-fns form]
+  (with-monad state-m
+    (m-bind (m-seq (map #(apply update-val %) (partition 2 (flatten (seq args-and-fns)))))
+            (constantly (bubble-sfn form)))))
+
+(defmacro update-ctx [args-and-fns form]
+  `(update-ctx* ~(vec (map-indexed
+                       (fn [i x]
+                         (if (even? i) (keyword x) x)) args-and-fns))
+                (with-monad identity-m
+                  ~form)))

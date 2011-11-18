@@ -1,49 +1,10 @@
 (ns frame.core
   (:use hiccup.core)
   (:require [hiccup.page-helpers :as helpers]
+            [frame.fstate :as fst]
+            [clojure.algo.monads :as m]
+            [frame.scale :as scale]
             [clojure.string :as str]))
-
-;;; Working with a dynamic context
-;;; 
-(def ^{:dynamic true
-       :doc "Current rendering context."}
-  *ctx* nil)
-
-(defn- ctx-has? [& syms]
-  (every? #(% *ctx*) syms))
-
-(defmacro set-ctx [args & body]
-  `(binding [*ctx* (merge *ctx* ~args)]
-     ~@body))
-
-(defmacro update-ctx [args-and-fns & body]
-  `(binding [*ctx* (reduce
-                    (fn [ctx# [key# fn#]]
-                      (update-in ctx# [key#] fn#))
-                    *ctx*
-                    ~args-and-fns)]
-     ~@body))
-
-(defmacro with-ctx [syms & body]
-  (let [let-forms
-        (if (map? syms)
-          `[~syms *ctx*]
-          (vec (apply concat
-                      (map (fn [sym]
-                             `[~sym ((keyword '~sym) *ctx*)])
-                           syms))))
-        syms (if (map? syms)
-               (map (fn [[_ sym]] sym) syms)
-               syms)]
-    `(if (ctx-has? ~@(map keyword syms))
-       (let ~let-forms
-         ~@body)
-       (throw
-        (Exception.
-         (str "Insufficient context! Need "
-              '~syms
-              ". Context is "
-              (pr-str *ctx*)))))))
 
 ;;; Some XML and SVG Hiccuphelpers
 ;;; 
@@ -51,7 +12,7 @@
                     {:svg "<!DOCTYPE svg PUBLIC \"-//W3C//DTD SVG 1.1//EN\"
 \"http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd\">"}))
 
-(def xml?
+(def ?xml
   "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?>")
 
 (defn svg-tag [attrs body]
@@ -59,13 +20,10 @@
                 :xmlns:xlink "http://www.w3.org/1999/xlink"
                 :version "1.1"} attrs) body])
 
-(defn svg* [args gen-body]
+(defn svg [body]
   ;; Eventually we'll parse down for sanity in dimensions
-  (set-ctx args
-    (svg-tag {:width (:width *ctx*) :height (:height *ctx*) :fill :none} (gen-body))))
-
-(defmacro svg [args & body]
-  `(svg* ~args (fn [] ~@body)))
+  (fst/with-ctx! [width height]
+    (svg-tag {:width width :height height :fill :none} body)))
 
 (defn- to-f
   "Convert some Hiccup-like vectors to sequences of f-exprs."
@@ -95,50 +53,60 @@
 
 ;;; Blocklike elements
 ;;;
-(defn spy [x] (prn x) x)
-(defn- is-hiccup-vec
-  [[x & _]] (not (sequential? x)))
 
-(defn- flatten-hiccup* [vs]
-  (loop [vs vs build nil]
-    (let [[v & vs] vs]
-     (if (nil? v)
-       (vec build)
-       (if (is-hiccup-vec v)
-         (recur vs (cons v build))
-         (recur vs (concat (flatten-hiccup* v) build)))))))
+(defn run-frames [ctx frame]
+  (first (frame ctx)))
 
-(defn- flatten-hiccup [x]
-  (if (sequential? x)
-    (if (is-hiccup-vec x) [x]
-        (vec (reverse (flatten-hiccup* x))))
-    x))
+(defn frame* [form]
+  (fst/with-ctx [svg?]
+    (if svg?
+      (fst/bubble-sfn form)
+      (svg (fst/set-ctx [svg? true]
+             (frame* form))))))
 
-(defn frame* [args gen-children]
-  (set-ctx args
-    (if (ctx-has? :width :height)
-      (with-ctx [width height]
-        (let [clipname (str (gensym))
-              inner (fn []
-                      [:g
-                       [:defs
-                        [:rect {:id clipname :width width :height height}]]
-                       `[:g ~{:style (css :clip-path (to-f [:url (str "#" clipname)]))}
-                         ~@(flatten-hiccup (gen-children))]])]
-          ;; TODO: Figure out why clipping breaks when I don't create
-          ;; a new SVG element. It's a bit clunky to keep creating
-          ;; extra layers.
-          (if (:svg *ctx*)
-            (inner)
-            (svg {}
-                 (set-ctx {:svg true}
-                   (inner))))))
-      (throw
-       (Exception.
-        "Outermost frame needs to specify the :height and :width.")))))
+(defmacro frame [& forms]
+  `(frame*
+    (m/with-monad m/identity-m
+      (list ~@forms))))
 
-(defmacro frame [args & body]
-  `(frame* ~args (fn [] [~@body])))
+(defn clipframe* [form]
+  (frame
+    (fst/with-ctx! [width height]
+      (let [clipname (gensym 'clippath)]
+        [:g
+         [:defs
+          [:clipPath {:id clipname} [:rect {:width width :height height}]]]
+         [:g {:style (css :clip-path (to-f [:url (str "#" clipname)]))}
+          form]]))))
+
+(defmacro clipframe [& forms]
+  `(clipframe* (list ~@forms)))
+
+(defmacro dataframe
+  "Set up a frame with local scales.
+  
+   (dataframe
+       [tx (scale/affine :domain xs     :range :x)
+        ty (scale/affine :domain [-1 1] :range :y)
+        tr (scale/sqrt                  :range [1 6])]
+    ...)"
+  [scale-decls & body]
+  (let [pairs (partition 2 scale-decls)
+        scales (map second pairs)
+        ;; These might not be the best ways to find the x and y scales
+        x-scale (first (filter (partial some #(= :x %)) scales))
+        y-scale (first (filter (partial some #(= :y %)) scales))]
+    `(fst/set-ctx*
+         ;; Put the most recent scales into context
+         [:x-scale ~x-scale
+          :y-scale ~y-scale]
+       (m/domonad fst/state-m
+         [~@(apply concat
+                   (map (fn [[sym scale-form]]
+                          `(~sym ~scale-form))
+                        (partition 2 scale-decls)))
+          res# (frame ~@body)]
+         res#))))
 
 (defn- expand-margin
   "Expand the SVG margin syntax."
@@ -146,95 +114,19 @@
   ([a b] [a b a b])
   ([a b c d] [a b c d]))
 
-(defmacro padded
-  [padding & rest]
-  `(let [[a# b# c# d#] (expand-margin ~@padding)
-         dy# (+ a# c#)
-         dx# (+ b# d#)]
-     ;; Shrink the inner context
-     (update-ctx {:width #(- % dx#)
-                  :height #(- % dy#)}
-       ;; And transform it away from the upper left corner
-       [:g {:transform (to-f [:translate d# a#])}
-        (frame {} ~@rest)])))
-
-;;; Scales and transformations
-;;; 
-(defn itransform [g ;; transformation and inverse
-                  & {:keys [auto domain range]
-                     :or {domain [0 1]
-                          range  [0 1]}}]
-  (with-ctx [width height]
-    (let [auto? (not (nil? auto))
-          auto (remove nil? auto)
-          ;; Fix the domain to the data using auto
-          domain (if auto?
-                   [(apply min auto) (apply max auto)]
-                   domain)
-          ;; Attempt to build the range automatically
-          range (case range
-                  :x [0 width]
-                  :y [height 0]
-                  range)
-          [in0 inf] domain
-          [out0 outf] range
-          domain-meas (- inf in0)
-          range-meas  (- outf out0)]
-      #(float
-        (+ (* range-meas
-              (/ (g (/ (- % in0)
-                       domain-meas))
-                 (g 1)))
-           out0)))))
-
-(defn scale [g ;; transformation
-             & {:keys [auto domain range]
-                :or {range  [0 1]}}]
-  (with-ctx [width height]
-    (let [auto (map g auto)
-          auto? (not (empty? auto))
-          ;; Fix the domain to the data using auto
-          domain (or domain
-                     (if auto?
-                       [(apply min auto) (apply max auto)])
-                     [0 1])
-          ;; Attempt to build the range automatically
-          range (case range
-                  :x [0 width]
-                  :y [height 0]
-                  range)
-          [in0 inf] (if auto? domain (map g domain))
-          [out0 outf] range
-          domain-meas (- inf in0)
-          range-meas  (- outf out0)]
-      #(float
-        (+ (* range-meas
-              (/ (- (g %) in0)
-                 domain-meas))
-           out0)))))
-
-(defn scale:affine [& args]
-  (apply scale identity args))
-
-(defn scale:sqrt [& args]
-  (apply scale #(Math/sqrt %) args))
-
-(defn scale:log [& args]
-  (let [{:keys [expt]} args
-        lbase (and expt (Math/log expt))
-        g (if expt
-            #(/ (Math/log %) lbase)
-            #(if (== % 0)
-               (throw (Exception. "Cannot take log of 0."))
-               (Math/log %)))]
-    (apply scale g args)))
-
-(defn scale:exp [& args]
-  (let [{:keys [expt]} args
-        g (if expt
-               #(Math/pow expt %)
-               #(Math/exp %))]
-    (apply scale g args)))
+(defn padded
+  [padding form]
+  (let [[a b c d] (apply expand-margin padding)
+        dy (+ a c)
+        dx (+ b d)]
+    ;; Shrink the inner context
+    (fst/update-ctx [width #(- % dx)
+                     height #(- % dy)]
+      ;; And transform it away from the upper left
+      ;; corner
+      (frame
+        [:g {:transform (to-f [:translate d a])}
+         form]))))
 
 ;;; Flows
 
@@ -283,46 +175,38 @@
                                   "sffffffffffff"))))
 
 (defn vline [x]
-  (with-ctx [height]
+  (fst/with-ctx [height]
     [:line {:y1 0 :y2 height
             :x1 x :x2 x
             :stroke-width 1 :stroke "#000"}]))
 
 (defn hline [y]
-  (with-ctx [width]
+  (fst/with-ctx [width]
     [:line {:x1 0 :x2 width
             :y1 y :y2 y
             :stroke-width 1 :stroke "#000"}]))
+
+(defn axes [& {:keys [x y]}]
+  (concat (and x (list (vline x)))
+          (and y (list (hline y)))))
 
 (defn sign [^double x]
   (cond (< x 0) -1
         (> x 0) 1
         true 0))
 
-(defmacro dataspace [[tx-sym xs ty-sym ys &
-                      {:keys [xlim ylim]}]
-                     & body]
-  `(let [xs# ~xs ys# ~ys xlim# ~xlim ylim# ~ylim]
-     (let [~tx-sym (scale:affine :auto xs# :domain xlim# :range :x)
-           ~ty-sym (scale:affine :auto ys# :domain ylim# :range :y)]
-       ~@body)))
 
 (defn scatter [xs ys rs colors]
-  (dataspace [tx xs ty ys :xlim [0.5 1] :ylim [0.5 1]]
-    (let [tr (scale:sqrt :auto rs :range [1 6])]
-      [(hline (ty 0))
-       (for [i (range (count xs))]
-         (let [x (nth xs i)
-               y (nth ys i)
-               r (nth rs i)
-               clr (nth colors i)]
-           [:circle {:cy (ty y) :cx (tx x) :r (tr r)
-                     :fill clr}]))])))
-
+  (for [i (range (count xs))]
+    (let [x (nth xs i)
+          y (nth ys i)
+          r (nth rs i)
+          clr (nth colors i)]
+      [:circle {:cy y :cx x :r r
+                :fill clr}])))
 
 (spit "out/test.html"
-      (html
-       [:html {:xmlns:svg "http://www.w3.org/2000/svg"}
+      (helpers/html5 {:xml? true :mode :xml}
         [:head [:title "Test"]]
         [:body
          [:div {:style (css :width "500px"
@@ -343,7 +227,15 @@
                 kpknn8 (map (fn [row] (nth row 11)) d)
                 kps10  (map (fn [row] (nth row 12)) d)
                 colors {1 "green" 0 "black" -1 "red"}]
-            (list
-             (frame {:width 500 :height 500}
-               (padded [6]
-                 (scatter kp kpknn8 ne (map (comp colors sign -) kp kpknn8))))))]]]))
+            (run-frames {:width 500 :height 500}
+              (clipframe
+               (padded [20]
+                 (dataframe [tx (scale/affine :domain kp :range :x)
+                             ty (scale/affine :domain kpknn8 :range :y)
+                             tr (scale/sqrt :domain ne :range [1 6])]
+                   (axes :x (tx 1.0) :y (ty 1.0))
+                   (println (apply max kp))
+                   (scatter (map tx kp)
+                            (map ty kpknn8)
+                            (map tr ne)
+                            (map (comp colors sign -) kp kpknn8)))))))]]))
