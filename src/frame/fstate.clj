@@ -92,6 +92,12 @@
 
 ;;; Create some context control mechanisms using this monad
 
+(defn par-state
+  "Lifts a sequence of state monads into a single state monad such
+  that each \"thread\" runs with its own copy of the state."
+  [mvs]
+  (sfn [s] [(map #(eval-state % s) mvs) s]))
+
 (defn bubble-sfn
   "Bubbles a stateful computations upward, consuming and preserving
   intermediate lists, vectors, and hashes."
@@ -103,7 +109,7 @@
                                      true identity))]
             (->> x
                  (map bubble-sfn)
-                 m-seq refn))
+                 par-state refn))
           
           (map? x)
           ((m-lift 1 (partial into {})) (bubble-sfn (seq x)))

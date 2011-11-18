@@ -29,17 +29,22 @@
   "Convert some Hiccup-like vectors to sequences of f-exprs."
   ([form & forms] (to-f (cons form forms)))
   ([form]
-     (if (sequential? form)
-       (let [[head & rest] form]
-         (if (not (empty? rest))
-           (if (keyword? head)
-             (apply str
-                    (subs (str (first form)) 1)
-                    "(" (concat (interpose ", " (map to-f
-                                                     rest)) [")"]))
-             (apply str (interpose " " (map to-f form))))
-           (str head)))
-       (str form))))
+     (cond (sequential? form)
+           (let [[head & rest] form]
+             (if (not (empty? rest))
+               (if (keyword? head)
+                 (apply str
+                        (subs (str (first form)) 1)
+                        "(" (concat (interpose ", " (map to-f
+                                                         rest)) [")"]))
+                 (apply str (interpose " " (map to-f form))))
+               (str head)))
+           
+           (number? form)
+           (str (float form))
+
+           :else
+           (str form))))
 
 (defn css
   "Convert a hash to a css style declaration using to-f."
@@ -125,7 +130,7 @@
       ;; And transform it away from the upper left
       ;; corner
       (frame
-        [:g {:transform (to-f [:translate d a])}
+        [:g {:transform (to-f :translate d a)}
          form]))))
 
 ;;; Flows
@@ -134,7 +139,38 @@
   "Partition an interval using a flexible interval set."
   [int part])
 
-(defn hflow [])
+(defn- flatten-seqs
+  "Flatten seqs like Hiccup will..."
+  [s] (if (seq? s)
+        (apply concat
+               (map flatten-seqs s))
+        (list s)))
+
+(defn hflow
+  "Start with even hflow"
+  [& things]
+  (fst/with-ctx [width]
+    (let [things (flatten-seqs things)
+          n (count things)
+          dx (float (/ width n))]
+      (map (fn [thing pos]
+             (fst/set-ctx [width dx]
+               [:g {:transform (to-f :translate pos 0)} thing]))
+           things
+           (iterate #(+ dx %) 0)))))
+
+(defn vflow
+  "Start with even hflow"
+  [& things]
+  (fst/with-ctx [height]
+    (let [things (flatten-seqs things)
+          n (count things)
+          dy (float (/ height n))]
+      (map (fn [thing pos]
+             (fst/set-ctx [height dy]
+               [:g {:transform (to-f [:translate 0 pos])} thing]))
+           things
+           (iterate #(+ dy %) 0)))))
 
 ;;; Grobs
 (defn path
@@ -195,22 +231,54 @@
         (> x 0) 1
         true 0))
 
+(defn scatter
+  ([xs ys & {:keys [radii colors] :or {radii 1 colors "#000"}}]
+     (let [n  (min (count xs) (count ys))
+           mklst (fn [x] (if (sequential? x) x (list x)))
+           xs (mklst xs)
+           ys (mklst ys)
+           rs (mklst radii)
+           cs (mklst colors)]
+       (take n
+             (map (fn [x y r c]
+                    [:circle {:cy y :cx x :r r :fill c :fill-opacity 0.5}])
+                  (cycle xs)
+                  (cycle ys)
+                  (cycle rs)
+                  (cycle cs))))))
 
-(defn scatter [xs ys rs colors]
-  (for [i (range (count xs))]
-    (let [x (nth xs i)
-          y (nth ys i)
-          r (nth rs i)
-          clr (nth colors i)]
-      [:circle {:cy y :cx x :r r
-                :fill clr}])))
+(defn scatterplot [xs ys rs]
+  (let [colors {-1 "#D8B365"
+                0 "#333"
+                1 "#5AB4AC"}]
+    (frame
+      (fst/with-ctx! [width height]
+        [:rect {:width width :height height :stroke "#000" :stroke-width 0.2}])
+      (padded [6]
+        (dataframe [tx (scale/affine :domain [0.5 1] :range :x)
+                    ty (scale/affine :domain [0.5 1] :range :y)
+                    tr (scale/sqrt :domain rs :range [1 2])]
+          (scatter (map tx xs)
+                   (map ty ys)
+                   :radii (map tr rs)
+                   :colors (map (comp colors sign -) ys xs)))))))
+
+(defn text-center [txt]
+  (dataframe [tx (scale/affine :range :x)
+              ty (scale/affine :range :y)]
+    [:text {:x (tx 0.5) :y (ty 0.5)
+            :fill "#000"
+            :font-family "Gill Sans"
+            :text-anchor "middle"
+            :style (css :dominant-baseline "central")}
+     (subs (str txt) 1)]))
 
 (spit "out/test.html"
       (helpers/html5 {:xml? true :mode :xml}
         [:head [:title "Test"]]
         [:body
-         [:div {:style (css :width "500px"
-                            :height "500px"
+         [:div {:style (css :width "750px"
+                            :height "750px"
                             :margin [0 "auto"]
                             :background "#fafafa")}
           (let [n (count d)
@@ -225,17 +293,44 @@
                 eps10  (map (fn [row] (nth row 9)) d)
                 kpknn2 (map (fn [row] (nth row 10)) d)
                 kpknn8 (map (fn [row] (nth row 11)) d)
-                kps10  (map (fn [row] (nth row 12)) d)
-                colors {1 "green" 0 "black" -1 "red"}]
-            (run-frames {:width 500 :height 500}
+                kps10  (map (fn [row] (nth row 12)) d)]
+            (run-frames {:width 750 :height 750}
               (clipframe
                (padded [20]
-                 (dataframe [tx (scale/affine :domain kp :range :x)
-                             ty (scale/affine :domain kpknn8 :range :y)
-                             tr (scale/sqrt :domain ne :range [1 6])]
-                   (axes :x (tx 1.0) :y (ty 1.0))
-                   (println (apply max kp))
-                   (scatter (map tx kp)
-                            (map ty kpknn8)
-                            (map tr ne)
-                            (map (comp colors sign -) kp kpknn8)))))))]]))
+                 (vflow
+                  (hflow (text-center :ep)
+                         (scatterplot ep kp np)
+                         (scatterplot ep epknn2 np)
+                         (scatterplot ep epknn8 np)
+                         (scatterplot ep kpknn2 np)
+                         (scatterplot ep kpknn8 np))
+                  (hflow (frame)
+                         (text-center :kp)
+                         (scatterplot kp epknn2 np)
+                         (scatterplot kp epknn8 np)
+                         (scatterplot kp kpknn2 np)
+                         (scatterplot kp kpknn8 np))
+                  (hflow (frame)
+                         (frame)
+                         (text-center :epknn2)
+                         (scatterplot epknn2 epknn8 np)
+                         (scatterplot epknn2 kpknn2 np)
+                         (scatterplot epknn2 kpknn8 np))
+                  (hflow (frame)
+                         (frame)
+                         (frame)
+                         (text-center :epknn8)
+                         (scatterplot epknn8 kpknn2 np)
+                         (scatterplot epknn8 kpknn8 np))
+                  (hflow (frame)
+                         (frame)
+                         (frame)
+                         (frame)
+                         (text-center :kpknn2)
+                         (scatterplot epknn2 kpknn8 np))
+                  (hflow (frame)
+                         (frame)
+                         (frame)
+                         (frame)
+                         (frame)
+                         (text-center :kpknn8)))))))]]))

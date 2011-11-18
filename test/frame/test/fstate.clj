@@ -43,7 +43,21 @@
   (testing "Should promote stateful values from deep structures"
     (let [comp (with-monad state-m (fetch-state))
           embed (fn [x] [1 2 3 [4 5 6 [7 8 [9 x]]]])] 
-      (is (= (eval-state (bubble-sfn (embed comp))) (embed {}))))))
+      (is (= (eval-state (bubble-sfn (embed comp))) (embed {})))))
+  (testing "Should allow for parallel stateful computation"
+    (is (= (eval-state
+            (par-state
+             (list (fetch-val :a)
+                   (fetch-val :b)))
+            {:a 1 :b 2})
+           (eval-state
+            (par-state
+             (list (set-ctx [b 3]
+                     ;; This change shouldn't be seen in the second "future"
+                     (fetch-val :a))
+                   (fetch-val :b)))
+            {:a 1 :b 2})           
+           '(1 2)))))
 
 (deftest test-ctx-highlevel
   (testing "Basic context usage"
