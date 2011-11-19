@@ -12,9 +12,9 @@ to Hiccup-flavored SVG allowing obvious mixing between the two libraries.
 
 Frameworke is a declarative, SVG-hosted plotting library at three levels: 
 
-1. *frame*: low-level SVG chart layout and building
-2. *worke*: data aware composition of middle-level graphing objects
-3. *plots*: high level ploting for data exploration and discovery using formulae
+1. **frame**: low-level SVG chart layout and building
+2. **worke**: data aware composition of middle-level graphing objects
+3. **plots**: high level ploting for data exploration and discovery using formulae
 
 Framework happily steals ideas from d3, Trellis, GGPlot, and Analemma, bringing 
 sensible plotting to Clojure.
