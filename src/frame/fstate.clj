@@ -118,6 +118,8 @@
           (if (state-m? x)
             x (m-result x)))))
 
+;;; First level of hiding the state monad
+
 (defmacro with-ctx
   ([syms form] `(with-ctx ~syms nil ~form))
   ([syms nil-v form]

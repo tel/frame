@@ -4,17 +4,13 @@
             [frame.fstate :as fst]
             [clojure.algo.monads :as m]
             [frame.scale :as scale]
-            [clojure.string :as str]))
+            [tappan.matrix :as mat]
+            [tappan.workers.kmeans_purity :as km]
+            [clojure.string :as str])
+  (:gen-class))
 
 ;;; Some XML and SVG Hiccuphelpers
-;;; 
-(def doctype (merge helpers/doctype
-                    {:svg "<!DOCTYPE svg PUBLIC \"-//W3C//DTD SVG 1.1//EN\"
-\"http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd\">"}))
-
-(def ?xml
-  "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?>")
-
+;;;
 (defn svg-tag [attrs body]
   [:svg (merge {:xmlns "http://www.w3.org/2000/svg"
                 :xmlns:xlink "http://www.w3.org/1999/xlink"
@@ -59,7 +55,7 @@
 ;;; Blocklike elements
 ;;;
 
-(defn run-frames [ctx frame]
+(defn doframes [ctx frame]
   (first (frame ctx)))
 
 (defn frame* [form]
@@ -119,7 +115,7 @@
   ([a b] [a b a b])
   ([a b c d] [a b c d]))
 
-(defn padded
+(defn padded*
   [padding form]
   (let [[a b c d] (apply expand-margin padding)
         dy (+ a c)
@@ -132,6 +128,10 @@
       (frame
         [:g {:transform (to-f :translate d a)}
          form]))))
+
+(defmacro padded [padding & forms]
+  `(padded* ~padding (list ~@forms)))
+
 
 ;;; Flows
 
@@ -205,11 +205,6 @@
 
 ;;; Some tests
 
-(def d (sort-by #(- (nth % 4) (nth % 5))
-                (remove (partial some nil?)
-                        (read-csv "out/dists.csv"
-                                  "sffffffffffff"))))
-
 (defn vline [x]
   (fst/with-ctx [height]
     [:line {:y1 0 :y2 height
@@ -241,96 +236,132 @@
            cs (mklst colors)]
        (take n
              (map (fn [x y r c]
-                    [:circle {:cy y :cx x :r r :fill c :fill-opacity 0.5}])
+                    [:circle {:cy y :cx x :r r :fill c :fill-opacity 0.7}])
                   (cycle xs)
                   (cycle ys)
                   (cycle rs)
                   (cycle cs))))))
 
-(defn scatterplot [xs ys rs]
-  (let [colors {-1 "#D8B365"
-                0 "#333"
-                1 "#5AB4AC"}]
-    (frame
-      (fst/with-ctx! [width height]
-        [:rect {:width width :height height :stroke "#000" :stroke-width 0.2}])
-      (padded [6]
-        (dataframe [tx (scale/affine :domain [0.5 1] :range :x)
-                    ty (scale/affine :domain [0.5 1] :range :y)
-                    tr (scale/sqrt :domain rs :range [1 2])]
-          (scatter (map tx xs)
-                   (map ty ys)
-                   :radii (map tr rs)
-                   :colors (map (comp colors sign -) ys xs)))))))
+(defn scatterplot [xs ys rs & {:keys [xlim ylim colors]
+                               :or {colors [0]}}]
+  (let [color-map {-1 "#D8B365"
+                   0 "#888"
+                   1 "#5AB4AC"}]
+    (padded [4]
+      (dataframe [tx (scale/affine :domain (or xlim xs) :range :x)
+                  ty (scale/affine :domain (or ylim ys) :range :y)
+                  tr (scale/sqrt :domain rs :range [0.2 2.2])]
+        (scatter (map tx xs)
+                 (map ty ys)
+                 :radii (map tr rs)
+                 :colors (map color-map colors))))))
 
 (defn text-center [txt]
   (dataframe [tx (scale/affine :range :x)
               ty (scale/affine :range :y)]
     [:text {:x (tx 0.5) :y (ty 0.5)
-            :fill "#000"
+            :fill "#444"
             :font-family "Gill Sans"
+            :font-size "10pt"
             :text-anchor "middle"
             :style (css :dominant-baseline "central")}
-     (subs (str txt) 1)]))
+     (str txt)]))
 
-(spit "out/test.html"
-      (helpers/html5 {:xml? true :mode :xml}
-        [:head [:title "Test"]]
-        [:body
-         [:div {:style (css :width "750px"
-                            :height "750px"
-                            :margin [0 "auto"]
-                            :background "#fafafa")}
-          (let [n (count d)
-                ml  (map (fn [row] (nth row 3)) d)
-                ne  (map (fn [row] (nth row 1)) d)
-                np  (map (fn [row] (nth row 2)) d)   
-                ep     (map (fn [row] (nth row 4)) d)
-                kp     (map (fn [row] (nth row 5)) d)
-                e2p    (map (fn [row] (nth row 6)) d)
-                epknn2 (map (fn [row] (nth row 7)) d)
-                epknn8 (map (fn [row] (nth row 8)) d)
-                eps10  (map (fn [row] (nth row 9)) d)
-                kpknn2 (map (fn [row] (nth row 10)) d)
-                kpknn8 (map (fn [row] (nth row 11)) d)
-                kps10  (map (fn [row] (nth row 12)) d)]
-            (run-frames {:width 750 :height 750}
-              (clipframe
-               (padded [20]
-                 (vflow
-                  (hflow (text-center :ep)
-                         (scatterplot ep kp np)
-                         (scatterplot ep epknn2 np)
-                         (scatterplot ep epknn8 np)
-                         (scatterplot ep kpknn2 np)
-                         (scatterplot ep kpknn8 np))
-                  (hflow (frame)
-                         (text-center :kp)
-                         (scatterplot kp epknn2 np)
-                         (scatterplot kp epknn8 np)
-                         (scatterplot kp kpknn2 np)
-                         (scatterplot kp kpknn8 np))
-                  (hflow (frame)
-                         (frame)
-                         (text-center :epknn2)
-                         (scatterplot epknn2 epknn8 np)
-                         (scatterplot epknn2 kpknn2 np)
-                         (scatterplot epknn2 kpknn8 np))
-                  (hflow (frame)
-                         (frame)
-                         (frame)
-                         (text-center :epknn8)
-                         (scatterplot epknn8 kpknn2 np)
-                         (scatterplot epknn8 kpknn8 np))
-                  (hflow (frame)
-                         (frame)
-                         (frame)
-                         (frame)
-                         (text-center :kpknn2)
-                         (scatterplot epknn2 kpknn8 np))
-                  (hflow (frame)
-                         (frame)
-                         (frame)
-                         (frame)
-                         (frame)
-                         (text-center :kpknn8)))))))]]))
+(defn test-html [frame]
+  (helpers/html5 {:xml? true :mode :xml}
+                 [:head [:title "Test"]]
+                 [:body
+                  [:div {:style (css :width "1100px"
+                                     :height "750px"
+                                     :margin [0 "auto"]
+                                     :background "#fafafa")}
+                   frame]]))
+
+(defn test-svg [frame]
+  (html frame))
+
+(defn dogrid* [xlist ylist fn]
+  (vflow (for [x xlist]
+           (hflow (for [y ylist]
+                    (fn x y))))))
+
+(defmacro dogrid [[xsym xs ysym ys] & body]
+  `(dogrid* ~xs ~ys (fn [~xsym ~ysym] ~@body)))
+
+(defn svg-matrix [m]
+  (fst/with-ctx! [width height]
+    (let [[n d] (mat/size m)]
+      (dataframe [tc (scale/bw :domain (mat/gets* m :_ :_))
+                  ox (scale/affine :domain (range d) :range :x)
+                  oy (scale/affine :domain (range n) :range :y :flip? true)]
+        (for [i (range n) j (range d)]
+          [:rect {:width (ox 1) :height (oy 1)
+                  :x (ox j) :y (oy i)
+                  :fill (tc (mat/get m i j))}])))))
+
+(defn -main [& args]
+  (let [d (sort-by #(- (nth % 4) (nth % 5))
+                   (remove (partial some nil?)
+                           (read-csv "out/dists.csv"
+                                     "sffffffffffffffffff")))
+        n (count d)
+        ml  (map (fn [row] (nth row 3)) d)
+        ne  (map (fn [row] (nth row 1)) d)
+        np  (map (fn [row] (nth row 2)) d)
+        ep     (map (fn [row] (nth row 4)) d)
+        epknn2 (map (fn [row] (nth row 5)) d)
+        epknn8 (map (fn [row] (nth row 6)) d)
+        eps10  (map (fn [row] (nth row 7)) d)
+        eps5   (map (fn [row] (nth row 8)) d)
+        kp     (map (fn [row] (nth row 9)) d)
+        kpknn2 (map (fn [row] (nth row 10)) d)
+        kpknn8 (map (fn [row] (nth row 11)) d)
+        kps10  (map (fn [row] (nth row 12)) d)
+        kps5   (map (fn [row] (nth row 13)) d)
+        base   (map (fn [row] (nth row 14)) d)]
+    (spit
+     "out/test.html"
+     (test-html
+      (doframes {:width 1100 :height 750}
+        (clipframe
+          (padded [20]
+            (let [comps [base
+                         ep eps10 eps5 epknn2 epknn8
+                         kp kps10 kps5 kpknn2 kpknn8]
+                  syms '[base
+                         ep eps10 eps5 epknn2 epknn8
+                         kp kps10 kps5 kpknn2 kpknn8]
+                  n (count comps)]
+              (dogrid [i (range n) j (range n)]
+                (cond (< j i)  (frame)
+                      (== j i) (text-center (nth syms i))
+                      :else    (let [x (nth comps i)
+                                     y (nth comps j)]
+                                 (scatterplot ml (map - x y) np
+                                              :ylim [-0.4 0.4]
+                                              :colors (map (comp sign -) x y))
+                                 ;; (scatterplot y x ne
+                                 ;;              :xlim [0.5 1]
+                                 ;;              :ylim [0.5 1]
+                                 ;;              :colors (map (comp sign -) x y))
+                                 )))))))))))
+
+;; (let [aff (mat/map #(Math/exp (/ (* -1 % %) (* 2 30 30))) di)
+;;       [n d] (mat/size aff)
+;;            root-d (mat/diag
+;;                    (for [i (range n)]
+;;                      (/ (Math/sqrt
+;;                          (reduce
+;;                           + (mat/gets* aff i :_))))))
+;;       lap (mat/prod root-d aff root-d)
+;;       evec (km/espace-of aff 2)
+;;       dist (mat/prod evec (mat/t evec))]
+;;   (spit "out/dists.svg"
+;;         (test-svg
+;;          (doframes {:width 1200 :height 300}
+;;            (frame
+;;             (hflow
+;;              (padded [20] (svg-matrix di))
+;;              (padded [20] (svg-matrix aff))
+;;              (padded [20] (svg-matrix lap))
+;;              (padded [20] (svg-matrix dist))))))))

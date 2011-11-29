@@ -1,5 +1,6 @@
 (ns frame.scale
-  (:require [frame.fstate :as fst]))
+  (:require [frame.fstate :as fst]
+            [clojure.algo.monads :as m]))
 
 (defn scale [g ;; transformation
              & {:keys [domain range flip?]
@@ -17,11 +18,13 @@
           [out0 outf] (if flip? (reverse range) range)
           domain-meas (- inf in0)
           range-meas  (- outf out0)]
-      #(float
-        (+ (* range-meas
-              (/ (- (g %) in0)
-                 domain-meas))
-           out0)))))
+      (if (== 0 domain-meas)
+        (constantly (+ (/ range-meas 2) out0))
+        #(float
+          (+ (* range-meas
+                (/ (- (g %) in0)
+                   domain-meas))
+             out0))))))
 
 (defn affine [& args]
   (apply scale identity args))
@@ -45,3 +48,14 @@
                #(Math/pow expt %)
                #(Math/exp %))]
     (apply scale g args)))
+
+;;; Color scales
+
+(defn bw [& args]
+  (m/domonad fst/state-m
+    [:let [args (apply merge (apply hash-map args)
+                       {:range [0 255]})]
+     scale (apply affine (apply concat (seq args)))]
+    (fn [v]
+      (let [z (Integer/toHexString (Math/floor (scale v)))]
+        (str "#" z z z)))))
