@@ -5,6 +5,8 @@
             :url "http://www.opensource.org/licenses/MIT"}
   :dependencies [[org.clojure/clojure "1.3.0"]
                  [slingshot "0.10.2"]
+                 [potemkin "0.1.3"]
                  [hiccup "1.0.0"]]
   :profiles {:dev {:warn-on-reflection true
-                   :dependencies [[expectations "1.3.7"]]}})
+                   :dependencies [[expectations "1.3.7"]
+                                  [codox "0.6.1"]]}})
